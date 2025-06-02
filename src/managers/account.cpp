@@ -1,7 +1,6 @@
 #include "account.hpp"
 
 #include <defs/geode.hpp>
-
 #include <managers/central_server.hpp>
 #include <managers/error_queues.hpp>
 #include <managers/game_server.hpp>
@@ -10,6 +9,8 @@
 #include <util/format.hpp>
 #include <util/misc.hpp>
 #include <util/net.hpp>
+
+#include <argon/argon.hpp>
 
 using namespace geode::prelude;
 using namespace util::data;
@@ -39,8 +40,11 @@ void GlobedAccountManager::initialize(std::string_view name, int accountId, int 
 
     initialized = true;
 
-    // if we changed accounts, clear some stuff
-    this->accountWasChanged();
+    if (accountChanged) {
+        // if we changed accounts, clear some stuff
+        this->accountWasChanged();
+        argonToken.lock()->clear();
+    }
 }
 
 void GlobedAccountManager::autoInitialize() {
@@ -119,12 +123,21 @@ std::optional<std::string> GlobedAccountManager::getAuthKey() {
     return util::crypto::base64Encode(decrypted, util::crypto::Base64Variant::URLSAFE);
 }
 
-void GlobedAccountManager::requestAuthToken(std::optional<std::function<void()>> callback) {
+void GlobedAccountManager::storeArgonToken(const std::string& token) {
+    *argonToken.lock() = token;
+}
+
+std::string GlobedAccountManager::getArgonToken() {
+    return *argonToken.lock();
+}
+
+void GlobedAccountManager::requestAuthToken(std::optional<std::function<void(bool)>> callback, bool argon) {
     this->cancelAuthTokenRequest();
 
     requestCallbackStored = std::move(callback);
+    didUseArgon = argon;
 
-    auto task = WebRequestManager::get().requestAuthToken();
+    auto task = WebRequestManager::get().requestAuthToken(argon);
 
     requestListener.bind(this, &GlobedAccountManager::requestCallback);
     requestListener.setFilter(task);
@@ -139,8 +152,10 @@ void GlobedAccountManager::requestCallback(WebRequestManager::Task::Event* event
         *this->authToken.lock() = std::move(result.text().unwrapOrDefault());
 
         if (requestCallbackStored.has_value()) {
-            requestCallbackStored.value()();
+            requestCallbackStored.value()(true);
         }
+
+        requestCallbackStored.reset();
 
         return;
     }
@@ -166,7 +181,18 @@ void GlobedAccountManager::requestCallback(WebRequestManager::Task::Event* event
         reason
     ));
 
-    this->clearAuthKey();
+    if (didUseArgon) {
+        argon::clearToken();
+    } else {
+        this->clearAuthKey();
+    }
+
+
+    if (requestCallbackStored.has_value()) {
+        requestCallbackStored.value()(false);
+    }
+
+    requestCallbackStored.reset();
 }
 
 void GlobedAccountManager::storeAdminPassword(std::string_view password) {

@@ -9,15 +9,33 @@ using namespace geode::prelude;
 
 static bool g_checked = false;
 static bool g_disable = false;
+static bool g_severelyBroken = false;
 static bool g_fallbackMenuButton = false;
-constexpr auto RESOURCE_DUMMY = "dummy-icon1.png"_spr;
+static globed::IntegrityReport g_report;
+constexpr auto RESOURCE_DUMMY = "dummy-icon2.png"_spr;
 
-bool globed::softDisabled() {
+static std::string pathToString(std::filesystem::path const& path) {
+#ifdef GEODE_IS_WINDOWS
+    return utils::string::wideToUtf8(path.wstring());
+#else
+    return path.string();
+#endif
+}
+
+bool globed::hasBrokenResources() {
     if (!g_checked) {
         checkResources();
     }
 
     return g_disable;
+}
+
+bool globed::hasSeverelyBrokenResources() {
+    if (!g_checked) {
+        checkResources();
+    }
+
+    return g_severelyBroken;
 }
 
 bool globed::useFallbackMenuButton() {
@@ -32,6 +50,7 @@ void globed::resetIntegrityCheck() {
     g_checked = false;
     g_disable = false;
     g_fallbackMenuButton = false;
+    g_report = {};
 }
 
 void globed::checkResources() {
@@ -42,16 +61,96 @@ void globed::checkResources() {
         return;
     }
 
-    if (!util::cocos::isValidSprite(CCSprite::createWithSpriteFrameName(RESOURCE_DUMMY))) {
-        log::warn("Failed to find {}, disabling the mod", RESOURCE_DUMMY);
+    g_report = std::move(createIntegrityReport());
+
+    if (!g_report.dummmyPngFound) {
+        log::warn("Failed to find {}, trying to apply builtin textures", RESOURCE_DUMMY);
         g_disable = true;
     }
 
-    if (!util::cocos::isValidSprite(CCSprite::createWithSpriteFrameName("menuicon.png"_spr))) {
+    if (!g_report.menuIconPngFound) {
         log::warn("Failed to find menuicon.png, fallback menu button enabled");
         g_disable = true;
         g_fallbackMenuButton = true;
     }
+
+    if (g_report.sheetFilesSeparated) {
+        log::warn("Sheet .png and .plist files are separated, trying to apply builtin textures");
+        g_disable = true;
+    }
+
+    if (g_disable) {
+        // if textures are broken, try to override the sheets with ours
+        auto sfc = CCSpriteFrameCache::get();
+        auto tc = CCTextureCache::get();
+        auto fu = CCFileUtils::get();
+
+        auto tq = util::cocos::getTextureQuality();
+        std::string_view suffix;
+        switch (tq) {
+            case util::cocos::TextureQuality::Medium:
+                suffix = "-hd"; break;
+            case util::cocos::TextureQuality::High:
+                suffix = "-uhd"; break;
+            default:
+                break;
+        }
+
+        auto replace = [&](std::string_view what) {
+            auto pngkey = fmt::format("{}.png"_spr, what);
+            auto plistkey = fmt::format("{}.plist"_spr, what);
+            auto plistsufkey = fmt::format("{}{}.plist"_spr, what, suffix);
+
+            sfc->removeSpriteFramesFromFile(plistkey.c_str());
+            tc->removeTextureForKey(fu->fullPathForFilename(pngkey.c_str(), false).c_str());
+
+            auto plistpath = Mod::get()->getResourcesDir() / fmt::format("{}{}.plist", what, suffix);
+            auto pngpath = Mod::get()->getResourcesDir() / fmt::format("{}{}.png", what, suffix);
+
+            auto pngstr = pathToString(pngpath);
+
+            fu->m_fullPathCache[fmt::format("{}.plist"_spr, what)] = pathToString(plistpath);
+            fu->m_fullPathCache[fmt::format("{}.png"_spr, what)] = pngstr;
+            fu->m_fullPathCache[fmt::format("{}{}.plist"_spr, what, suffix)] = pathToString(plistpath);
+            fu->m_fullPathCache[fmt::format("{}{}.png"_spr, what, suffix)] = pngstr;
+
+            tc->addImage(pngstr.c_str(), false);
+            sfc->addSpriteFramesWithFile(plistsufkey.c_str());
+        };
+
+        auto iterator = asp::fs::iterdir(Mod::get()->getResourcesDir());
+        if (!iterator) {
+            log::warn("Failed to iterate over globed resource folder: {}", iterator.unwrapErr().message());
+            g_severelyBroken = true;
+            return;
+        }
+
+        for (auto file : iterator.unwrap()) {
+            auto filename = pathToString(file.path().filename());
+            if (filename.ends_with(".plist") && !filename.ends_with("-hd.plist") && !filename.ends_with("-uhd.plist")) {
+                log::warn("Replacing sheet with original textures: '{}'", filename);
+                replace(filename.substr(0, filename.size() - 6));
+            }
+        }
+
+        // check if this actually helped
+
+        bool menuIcon = util::cocos::isValidSprite(CCSprite::createWithSpriteFrameName("menuicon.png"_spr));
+        bool dummyPng = util::cocos::isValidSprite(CCSprite::createWithSpriteFrameName(RESOURCE_DUMMY));
+
+        if (!menuIcon || !dummyPng) {
+            log::warn("Failed to restore Globed textures, mod will be disabled.");
+            g_severelyBroken = true;
+        } else {
+            log::info("Textures restored");
+        }
+
+        g_fallbackMenuButton = !menuIcon;
+    }
+}
+
+globed::IntegrityReport& globed::getIntegrityReport() {
+    return g_report;
 }
 
 std::string globed::IntegrityReport::asDebugData() {
@@ -113,7 +212,7 @@ std::string globed::IntegrityReport::asDebugData() {
     return data;
 }
 
-globed::IntegrityReport globed::getIntegrityReport() {
+globed::IntegrityReport globed::createIntegrityReport() {
     IntegrityReport report{};
 
     // First, check for texture packs
@@ -131,11 +230,11 @@ globed::IntegrityReport globed::getIntegrityReport() {
         log::error("Failed to find globedsheet1.plist (critical!)");
         report.sheetIntegrity = SheetIntegrity::MissingPlist;
     } else if (!asp::fs::equivalent(pngParent, plistParent).unwrapOr(false)) {
-        log::debug("Mismatch, globedsheet1.plist and globedsheet1.png are in different places ({} and {})", p, plist);
+        log::warn("Mismatch, globedsheet1.plist and globedsheet1.png are in different places ({} and {})", p, plist);
         report.sheetIntegrity = SheetIntegrity::Ok;
         report.sheetFilesSeparated = true;
     } else if (!asp::fs::equivalent(pngParent, Mod::get()->getResourcesDir())) {
-        log::debug("Mismatch, globedsheet1 expected in {}, found at {}", Mod::get()->getResourcesDir(), p);
+        log::warn("Mismatch, globedsheet1 expected in {}, found at {}", Mod::get()->getResourcesDir(), p);
         report.sheetIntegrity = SheetIntegrity::Ok;
         report.sheetFilesModified = true;
     }
@@ -155,7 +254,7 @@ globed::IntegrityReport globed::getIntegrityReport() {
 
     if (asp::fs::exists(impostorFolderLoc)) {
         report.impostorFolder = impostorFolderLoc;
-        log::debug("Impostor folder found: {}", impostorFolderLoc.string());
+        log::warn("Impostor folder found: {}", impostorFolderLoc.string());
     }
 
     // check for menuicon.png and dummy-icon1.png

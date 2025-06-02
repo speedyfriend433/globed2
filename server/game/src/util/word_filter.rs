@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use aho_corasick::AhoCorasick;
+use globed_shared::debug;
 
 pub struct WordFilter {
     algo: AhoCorasick,
@@ -11,7 +12,7 @@ pub struct WordFilter {
 impl WordFilter {
     pub fn new(words: &[String], whole_words: Vec<String>) -> Self {
         Self {
-            word_count: words.len(),
+            word_count: words.len() + whole_words.len(),
             algo: AhoCorasick::builder()
                 .ascii_case_insensitive(true)
                 .build(words)
@@ -24,13 +25,15 @@ impl WordFilter {
         let mut whole_words = Vec::new();
 
         words.retain_mut(|w| {
-            let to_remove = w.starts_with("!!") && w.ends_with("!!") && w.len() > 4;
+            let is_whole = w.starts_with("!!") && w.ends_with("!!") && w.len() > 4;
 
-            if to_remove {
-                whole_words.push(std::mem::take(w));
+            if is_whole {
+                let mut word = std::mem::take(w);
+                word.remove_matches("!!");
+                whole_words.push(word);
             }
 
-            !to_remove
+            !is_whole && !w.is_empty()
         });
 
         Self::new(&words, whole_words)
@@ -52,6 +55,7 @@ impl WordFilter {
         let new_filter = Self::new_from_lines(lines);
         self.algo = new_filter.algo;
         self.word_count = new_filter.word_count;
+        self.whole_words = new_filter.whole_words;
 
         Ok(())
     }

@@ -1,5 +1,6 @@
 #include "game_server.hpp"
 
+#include <matjson/reflect.hpp>
 #include <util/net.hpp>
 #include <util/rng.hpp>
 #include <util/collections.hpp>
@@ -9,9 +10,7 @@
 using namespace geode::prelude;
 using namespace asp::time;
 
-GameServerManager::GameServerManager() {
-    this->updateCache(Mod::get()->getSavedValue<std::string>(SERVER_RESPONSE_CACHE_KEY));
-}
+GameServerManager::GameServerManager() {}
 
 Result<> GameServerManager::addServer(std::string_view serverId, std::string_view name, std::string_view address, std::string_view region) {
     _data.lock()->servers.erase(std::string(serverId));
@@ -61,8 +60,68 @@ Result<bool> GameServerManager::addOrUpdateServer(std::string_view serverId_, st
     return Ok(true);
 }
 
+void GameServerManager::addOrUpdateRelay(const ServerRelay& relay) {
+    auto data = _data.lock();
+    data->relays[relay.id] = relay;
+}
+
+void GameServerManager::reloadActiveRelay() {
+    auto id = Mod::get()->getSavedValue<std::string>("active-server-relay");
+
+    if (!id.empty()) {
+        log::info("Reloading relay ({})", id);
+    }
+
+    this->setActiveRelay(id);
+}
+
 void GameServerManager::clear() {
-    _data.lock()->servers.clear();
+    auto data = _data.lock();
+    data->servers.clear();
+    data->relays.clear();
+
+    pendingChanges = true;
+}
+
+std::vector<ServerRelay> GameServerManager::getAllRelays() {
+    std::vector<ServerRelay> out;
+
+    for (auto& [k, v] : _data.lock()->relays) {
+        out.push_back(v);
+    }
+
+    return out;
+}
+
+void GameServerManager::setActiveRelay(const std::string& id) {
+    auto data = _data.lock();
+
+    if (data->relays.contains(id)) {
+        data->activeRelay = data->relays.at(id).id;
+    } else {
+        data->activeRelay = "";
+    }
+
+    Mod::get()->setSavedValue("active-server-relay", data->activeRelay);
+}
+
+std::string GameServerManager::getActiveRelayId() {
+    return _data.lock()->activeRelay;
+}
+
+std::optional<ServerRelay> GameServerManager::getActiveRelay() {
+    auto data = _data.lock();
+
+    if (data->activeRelay.empty()) {
+        return std::nullopt;
+    }
+
+    if (!data->relays.contains(data->activeRelay)) {
+        data->activeRelay = "";
+        return std::nullopt;
+    }
+
+    return data->relays.at(data->activeRelay);
 }
 
 size_t GameServerManager::count() {
@@ -84,6 +143,14 @@ void GameServerManager::clearActive() {
     data->active.clear();
 
     this->saveLastConnected("");
+}
+
+bool GameServerManager::hasRelays() {
+    return this->relayCount();
+}
+
+size_t GameServerManager::relayCount() {
+    return _data.lock()->relays.size();
 }
 
 void GameServerManager::clearAllExcept(std::string_view id) {
@@ -138,6 +205,12 @@ int GameServerManager::getActivePing() {
     return server.value().ping;
 }
 
+int GameServerManager::getActivePlayerCount() {
+    auto server = this->getActiveServer();
+
+    return server ? server->playerCount : 0;
+}
+
 void GameServerManager::saveStandalone(std::string_view addr) {
     Mod::get()->setSavedValue(STANDALONE_SETTING_KEY, std::string(addr));
 }
@@ -152,72 +225,6 @@ void GameServerManager::saveLastConnected(std::string_view addr) {
 
 std::string GameServerManager::loadLastConnected() {
     return Mod::get()->getSavedValue<std::string>(LAST_CONNECTED_SETTING_KEY);
-}
-
-void GameServerManager::updateCache(std::string_view response) {
-    _data.lock()->cachedServerResponse = response;
-    Mod::get()->setSavedValue(SERVER_RESPONSE_CACHE_KEY, std::string(response));
-}
-
-void GameServerManager::clearCache() {
-    this->updateCache("");
-}
-
-Result<> GameServerManager::loadFromCache() {
-    const size_t MAGIC_LEN = sizeof(NetworkManager::SERVER_MAGIC);
-
-    std::string response = _data.lock()->cachedServerResponse;
-
-    GLOBED_UNWRAP_INTO(util::crypto::base64Decode(response), auto decoded)
-
-    GLOBED_REQUIRE_SAFE(decoded.size() >= MAGIC_LEN, fmt::format("invalid response sent by the server (missing magic)"));
-
-    ByteBuffer buf(std::move(decoded));
-    auto magicResult = buf.readValue<util::data::bytearray<MAGIC_LEN>>();
-
-    if (magicResult.isErr()) {
-        return Err(ByteBuffer::strerror(magicResult.unwrapErr()));
-    }
-
-    auto magic = magicResult.unwrap();
-
-    // compare it with the needed magic
-    bool correct = true;
-    for (size_t i = 0; i < MAGIC_LEN; i++) {
-        if (magic[i] != NetworkManager::SERVER_MAGIC[i]) {
-            correct = false;
-            break;
-        }
-    }
-
-    GLOBED_REQUIRE_SAFE(correct, "invalid response sent by the server (invalid magic)");
-
-    auto serverListResult = buf.readValue<std::vector<GameServerEntry>>();
-    if (serverListResult.isErr()) {
-        return Err(ByteBuffer::strerror(serverListResult.unwrapErr()));
-    }
-
-    auto serverList = serverListResult.unwrap();
-
-    for (const auto& server : serverList) {
-        auto result = this->addOrUpdateServer(
-            server.id,
-            server.name,
-            server.address,
-            server.region
-        );
-
-        if (result.isErr()) {
-            this->clear();
-            return Err("invalid game server found when parsing server response");
-        }
-
-        if (result.unwrap()) {
-            this->pendingChanges = true;
-        }
-    }
-
-    return Ok();
 }
 
 uint32_t GameServerManager::startPing(std::string_view serverId) {

@@ -24,6 +24,7 @@ use globed_shared::{
     should_ignore_error,
 };
 use handlers::game::MAX_VOICE_PACKET_SIZE;
+use slotmap::DefaultKey;
 use tokio::time::Instant;
 
 use crate::{
@@ -32,6 +33,8 @@ use crate::{
     server::GameServer,
     util::{LockfreeMutCell, SimpleRateLimiter},
 };
+
+use self::socket::ProtocolOverride;
 
 pub use super::*;
 
@@ -98,6 +101,9 @@ pub struct ClientThread {
     pub account_data: SyncMutex<PlayerAccountData>,
     pub user_entry: SyncMutex<ServerUserEntry>,
     pub user_role: SyncMutex<ComputedRole>,
+    pub friend_list: SyncMutex<Vec<i32>>,
+
+    pub queued_packets: SyncMutex<VecDeque<Vec<u8>>>,
 
     pub is_authorized_user: AtomicBool,
 
@@ -109,6 +115,7 @@ pub struct ClientThread {
     voice_rate_limiter: LockfreeMutCell<SimpleRateLimiter>,
     chat_rate_limiter: Option<LockfreeMutCell<SimpleRateLimiter>>,
     translator: PacketTranslator,
+    slotmap_key: SyncMutex<Option<DefaultKey>>,
     pub pending_notice_replies: SyncMutex<Vec<PendingNoticeReply>>,
 
     pub destruction_notify: Arc<Notify>,
@@ -143,6 +150,8 @@ impl ClientThread {
         let account_data = std::mem::take(&mut *thread.account_data.lock());
         let user_entry = std::mem::take(&mut *thread.user_entry.lock()).unwrap_or_default();
         let user_role = std::mem::take(&mut *thread.user_role.lock()).unwrap_or_else(|| game_server.state.role_manager.get_default().clone());
+        let friend_list = std::mem::take(&mut *thread.friend_list.lock());
+        let queued_packets = std::mem::take(&mut *thread.queued_packets.lock());
         let translator = PacketTranslator::new(thread.protocol_version.load(Ordering::Relaxed));
 
         Self {
@@ -163,6 +172,9 @@ impl ClientThread {
             account_data: SyncMutex::new(account_data),
             user_entry: SyncMutex::new(user_entry),
             user_role: SyncMutex::new(user_role),
+            friend_list: SyncMutex::new(friend_list),
+
+            queued_packets: SyncMutex::new(queued_packets),
 
             is_authorized_user: AtomicBool::new(false),
 
@@ -174,6 +186,7 @@ impl ClientThread {
             voice_rate_limiter: LockfreeMutCell::new(voice_rate_limiter),
             chat_rate_limiter: chat_rate_limiter.map(LockfreeMutCell::new),
             translator,
+            slotmap_key: SyncMutex::new(None),
             pending_notice_replies: SyncMutex::new(Vec::new()),
 
             destruction_notify: thread.destruction_notify,
@@ -206,6 +219,21 @@ impl ClientThread {
 
     pub async fn run(&self) -> ClientThreadOutcome {
         let mut last_received_packet = Instant::now();
+
+        {
+            loop {
+                let pkt = self.queued_packets.lock().pop_front();
+
+                match pkt {
+                    Some(pkt) => {
+                        if let Err(err) = self.handle_message(ServerThreadMessage::Packet(pkt)).await {
+                            self.print_error(&err);
+                        }
+                    }
+                    None => break,
+                }
+            }
+        }
 
         loop {
             let state = self.connection_state.load();
@@ -426,6 +454,15 @@ impl ClientThread {
         reply_id
     }
 
+    pub fn set_slotmap_key(&self, key: DefaultKey) {
+        *self.slotmap_key.lock() = Some(key);
+    }
+
+    pub fn take_slotmap_key(&self) -> Option<DefaultKey> {
+        let mut k = self.slotmap_key.lock();
+        k.take()
+    }
+
     pub fn routine_cleanup(&self) {
         // delete all pending replies that are over 1 hour old
         self.pending_notice_replies
@@ -446,7 +483,15 @@ impl ClientThread {
             ServerThreadMessage::Packet(mut packet) => self.handle_packet(&mut packet).await?,
             ServerThreadMessage::SmallPacket((mut packet, len)) => self.handle_packet(&mut packet[..len]).await?,
             ServerThreadMessage::BroadcastText(text_packet) => self.send_packet_static(&text_packet).await?,
-            ServerThreadMessage::BroadcastVoice(voice_packet) => self.send_packet_dynamic(&*voice_packet).await?,
+            ServerThreadMessage::BroadcastVoice(voice_packet) => {
+                let tcp = self.privacy_settings.lock().get_tcp_audio();
+
+                if tcp {
+                    self.send_packet_dynamic_tcp(&*voice_packet).await?
+                } else {
+                    self.send_packet_dynamic(&*voice_packet).await?
+                }
+            }
             ServerThreadMessage::BroadcastNotice(packet) => {
                 info!("{} is receiving a notice: {}", self.account_data.lock().name, packet.message);
                 self.send_packet_translatable(packet).await?;
@@ -519,7 +564,15 @@ impl ClientThread {
         {
             #[cfg(debug_assertions)]
             log::warn!("blocking text/voice packet from {}", self.account_id.load(Ordering::Relaxed));
-            return Ok(());
+
+            let user_muted = self.user_entry.lock().active_mute.is_some();
+
+            // XXX: protocol compat
+            if self.protocol_version.load(Ordering::Relaxed) >= 14 {
+                return self.send_packet_static(&VoiceFailedPacket { user_muted }).await;
+            } else {
+                return Ok(());
+            }
         }
 
         // decrypt the packet in-place if encrypted
@@ -543,6 +596,7 @@ impl ClientThread {
             UpdatePlayerStatusPacket::PACKET_ID => self.handle_set_player_status(&mut data).await,
             LinkCodeRequestPacket::PACKET_ID => self.handle_link_code_request(&mut data).await,
             RequestMotdPacket::PACKET_ID => self.handle_motd_request(&mut data).await,
+            UpdateFriendListPacket::PACKET_ID => self.handle_update_friend_list(&mut data).await,
 
             /* game related */
             RequestPlayerProfilesPacket::PACKET_ID => self.handle_request_profiles(&mut data).await,
@@ -588,24 +642,48 @@ impl ClientThread {
     // packet encoding and sending functions
 
     #[inline]
+    fn proto_override(&self) -> ProtocolOverride {
+        if unsafe { self.socket.get() }.udp_peer.is_some() {
+            ProtocolOverride::None
+        } else {
+            ProtocolOverride::Tcp // tcp if the user is in tcp-only mode
+        }
+    }
+
+    #[inline]
     async fn send_packet_static<P: Packet + Encodable + StaticSize>(&self, packet: &P) -> Result<()> {
-        unsafe { self.socket.get_mut() }.send_packet_static(packet).await
+        unsafe { self.socket.get_mut() }
+            .send_packet_static_override(packet, self.proto_override())
+            .await
     }
 
     #[inline]
     async fn send_packet_dynamic<P: Packet + Encodable + DynamicSize>(&self, packet: &P) -> Result<()> {
-        unsafe { self.socket.get_mut() }.send_packet_dynamic(packet).await
+        unsafe { self.socket.get_mut() }
+            .send_packet_dynamic_override(packet, self.proto_override())
+            .await
+    }
+
+    #[inline]
+    async fn send_packet_dynamic_tcp<P: Packet + Encodable + DynamicSize>(&self, packet: &P) -> Result<()> {
+        unsafe { self.socket.get_mut() }
+            .send_packet_dynamic_override(packet, ProtocolOverride::Tcp)
+            .await
     }
 
     #[inline]
     async fn send_packet_translatable<P: Packet + Encodable + DynamicSize + PartialTranslatableEncodable>(&self, packet: P) -> Result<()> {
-        unsafe { self.socket.get_mut() }.send_packet_translatable(packet).await
+        unsafe { self.socket.get_mut() }
+            .send_packet_translatable(packet, self.proto_override())
+            .await
     }
 
     #[inline]
     #[allow(unused)]
     async fn send_packet_alloca<P: Packet + Encodable>(&self, packet: &P, packet_size: usize) -> Result<()> {
-        unsafe { self.socket.get_mut() }.send_packet_alloca(packet, packet_size).await
+        unsafe { self.socket.get_mut() }
+            .send_packet_alloca(packet, packet_size, self.proto_override())
+            .await
     }
 
     #[inline]
@@ -614,7 +692,7 @@ impl ClientThread {
         F: FnOnce(&mut FastByteBuffer),
     {
         unsafe { self.socket.get_mut() }
-            .send_packet_alloca_with::<P, F>(packet_size, encode_fn)
+            .send_packet_alloca_with::<P, F>(packet_size, self.proto_override(), encode_fn)
             .await
     }
 }

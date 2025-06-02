@@ -48,6 +48,7 @@ public:
     // Launch args
     struct LaunchArgs {
         Arg<"globed-crt-fix"> crtFix;
+        Arg<"globed-net-dump"> netDump;
         Arg<"globed-verbose-curl"> verboseCurl;
         Arg<"globed-skip-preload"> skipPreload;
         Arg<"globed-debug-preload"> debugPreload;
@@ -262,6 +263,8 @@ public:
         Setting<bool, true> editorSupport;
         Setting<bool, false> increaseLevelList;
         Setting<int, 0> fragmentationLimit;
+        Setting<bool, false> forceTcp;
+        Setting<bool, false> showRelays;
         Setting<bool, false> compressedPlayerCount;
         Setting<bool, true> useDiscordRPC;
         Setting<bool, true> changelogPopups;
@@ -292,6 +295,7 @@ public:
         LimitedSetting<float, 1.0f, 0.f, 2.f> voiceVolume;
         Setting<bool, false> onlyFriends;
         Setting<bool, true> lowerAudioLatency;
+        Setting<bool, false> tcpAudio;
         Setting<int, 0> audioDevice;
         Setting<bool, true> deafenNotification;
         Setting<bool, false> voiceLoopback; // TODO unimpl
@@ -329,12 +333,13 @@ public:
     struct Keys {
         KeybindSetting<cocos2d::enumKeyCodes::KEY_V> voiceChatKey;
         KeybindSetting<cocos2d::enumKeyCodes::KEY_B> voiceDeafenKey;
-        KeybindSetting<cocos2d::enumKeyCodes::KEY_H> hidePlayersKey;
+        KeybindSetting<cocos2d::enumKeyCodes::KEY_None> hidePlayersKey;
     };
 
     struct Flags {
         Flag seenSignupNotice;       // Obsolete
         Flag seenSignupNoticev2;
+        Flag seenSignupNoticev3;
         Flag seenVoiceChatPTTNotice;
         Flag seenTeleportNotice;
         Flag seenAprilFoolsNotice;   // Obsolete
@@ -342,6 +347,7 @@ public:
         Flag seenGlobalTriggerGuide;
         Flag seenRoomOptionsSafeModeNotice;
         Flag seenSwagConnectionPopup;
+        Flag seenRelayNotice;
     };
 
     Globed globed;
@@ -361,6 +367,7 @@ public:
             .noInvites = globed.noInvites,
             .hideInGame = globed.hideInGame,
             .hideRoles = globed.hideRoles,
+            .tcpAudio = communication.tcpAudio,
         };
     }
 
@@ -419,13 +426,14 @@ private:
 // Launch args
 
 GLOBED_SERIALIZABLE_STRUCT(GlobedSettings::LaunchArgs, (
-    crtFix, verboseCurl, skipPreload, debugPreload, skipResourceCheck, tracing, noSslVerification, fakeData, resetSettings, devStuff
+    crtFix, netDump, verboseCurl, skipPreload, debugPreload, skipResourceCheck, tracing, noSslVerification, fakeData, resetSettings, devStuff
 ));
 
 // Settings
 
 GLOBED_SERIALIZABLE_STRUCT(GlobedSettings::Globed, (
-    autoconnect, preloadAssets, deferPreloadAssets, invitesFrom, editorSupport, increaseLevelList, fragmentationLimit, compressedPlayerCount, useDiscordRPC, editorChanges, changelogPopups, pinnedLevelCollapsed,
+    autoconnect, preloadAssets, deferPreloadAssets, invitesFrom, editorSupport, increaseLevelList, fragmentationLimit, forceTcp, showRelays,
+    compressedPlayerCount, useDiscordRPC, editorChanges, changelogPopups, pinnedLevelCollapsed,
     isInvisible, noInvites, hideInGame, hideRoles
 ));
 
@@ -434,7 +442,7 @@ GLOBED_SERIALIZABLE_STRUCT(GlobedSettings::Overlay, (
 ));
 
 GLOBED_SERIALIZABLE_STRUCT(GlobedSettings::Communication, (
-    voiceEnabled, voiceProximity, classicProximity, voiceVolume, onlyFriends, lowerAudioLatency, audioDevice, deafenNotification, voiceLoopback
+    voiceEnabled, voiceProximity, classicProximity, voiceVolume, onlyFriends, lowerAudioLatency, tcpAudio, audioDevice, deafenNotification, voiceLoopback
 ));
 
 GLOBED_SERIALIZABLE_STRUCT(GlobedSettings::LevelUI, (
@@ -456,11 +464,26 @@ GLOBED_SERIALIZABLE_STRUCT(GlobedSettings::Keys, (
 ));
 
 GLOBED_SERIALIZABLE_STRUCT(GlobedSettings::Flags, (
-    seenSignupNotice, seenSignupNoticev2, seenVoiceChatPTTNotice, seenTeleportNotice,
+    seenSignupNotice, seenSignupNoticev2, seenSignupNoticev3, seenVoiceChatPTTNotice, seenTeleportNotice,
     seenAprilFoolsNotice, seenStatusNotice, seenGlobalTriggerGuide, seenRoomOptionsSafeModeNotice,
-    seenSwagConnectionPopup
+    seenSwagConnectionPopup, seenRelayNotice
 ));
 
 GLOBED_SERIALIZABLE_STRUCT(GlobedSettings, (
     globed, overlay, communication, levelUi, players, advanced, admin, keys, flags
 ));
+
+// Net dump thingy
+
+namespace globed {
+    void _doNetDump(std::string_view str);
+
+    template <typename... Args>
+    GEODE_INLINE void netLog(fmt::format_string<Args...> fmt, Args&&... args) {
+        static bool enabled = GlobedSettings::get().launchArgs().netDump;
+
+        if (enabled) {
+            _doNetDump(fmt::format(fmt, std::forward<Args>(args)...));
+        }
+    }
+}

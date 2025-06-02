@@ -2,6 +2,7 @@
 
 #include "address.hpp"
 #include <defs/assert.hpp>
+#include <managers/settings.hpp>
 #include <util/net.hpp>
 
 #ifdef GEODE_IS_WINDOWS
@@ -20,17 +21,36 @@ UdpSocket::UdpSocket() : socket_(-1) {
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
     socket_ = sock;
 
+    globed::netLog("UdpSocket(this={}, fd={}) created", (void*)this, sock);
+
     GLOBED_REQUIRE(sock != -1, "failed to create a udp socket: socket failed");
 }
 
 UdpSocket::~UdpSocket() {
+    globed::netLog("UdpSocket(this={}, fd={}) destroyed", (void*)this, socket_.load());
+
     this->close();
+}
+
+UdpSocket& UdpSocket::operator=(UdpSocket&& other) {
+    if (this != &other) {
+        this->socket_.store(other.socket_.load());
+        this->connected.store(other.connected.load());
+        this->destAddr_ = std::move(other.destAddr_);
+
+        other.socket_.store(0);
+        other.connected.store(false);
+    }
+
+    return *this;
 }
 
 Result<> UdpSocket::connect(const NetworkAddress& address) {
     if (socket_ == -1) {
         return Err("This UDP socket has already been closed and cannot be reused");
     }
+
+    globed::netLog("UdpSocket::connect(this={}, address={})", (void*)this, GLOBED_LAZY(address.toString()));
 
     destAddr_->sin_family = AF_INET;
 
@@ -43,16 +63,22 @@ Result<> UdpSocket::connect(const NetworkAddress& address) {
 Result<int> UdpSocket::send(const char* data, unsigned int dataSize) {
     GLOBED_REQUIRE_SAFE(connected, "attempting to call UdpSocket::send on a disconnected socket")
 
+    globed::netLog("UdpSocket::send(this={}, data={}, size={})", (void*)this, (void*)data, dataSize);
+
     int retval = sendto(socket_, data, dataSize, 0, reinterpret_cast<struct sockaddr*>(destAddr_.get()), sizeof(sockaddr_in));
 
     if (retval == -1) {
-        return Err(fmt::format("sendto failed ({}): {}", retval, util::net::lastErrorString()));
+        auto errmsg = util::net::lastErrorString();
+        globed::netLog("UdpSocket::send failed, code {}: {}", retval, errmsg);
+        return Err(fmt::format("sendto failed ({}): {}", retval, errmsg));
     }
 
     return Ok(retval);
 }
 
 Result<int> UdpSocket::sendTo(const char* data, unsigned int dataSize, const NetworkAddress& address) {
+    globed::netLog("UdpSocket::sendTo(this={}, data={}, size={}, address={})", (void*)this, (void*)data, dataSize, GLOBED_LAZY(address.toString()));
+
     // stinky windows returns wsa error 10014 if sockaddr is a stack pointer
     std::unique_ptr<sockaddr_in> addr = std::make_unique<sockaddr_in>();
 
@@ -63,13 +89,16 @@ Result<int> UdpSocket::sendTo(const char* data, unsigned int dataSize, const Net
     int retval = sendto(socket_, data, dataSize, 0, reinterpret_cast<struct sockaddr*>(addr.get()), sizeof(sockaddr));
 
     if (retval == -1) {
-        return Err(fmt::format("sendto failed ({}): {}", retval, util::net::lastErrorString()));
+        auto errmsg = util::net::lastErrorString();
+        globed::netLog("UdpSocket::sendTo failed, code {}: {}", retval, errmsg);
+        return Err(fmt::format("sendto failed ({}): {}", retval, errmsg));
     }
 
     return Ok(retval);
 }
 
 void UdpSocket::disconnect() {
+    globed::netLog("UdpSocket::disconnect(this={})", (void*)this);
     connected = false;
 }
 
@@ -92,6 +121,8 @@ RecvResult UdpSocket::receive(char* buffer, int bufferSize) {
 
 bool UdpSocket::close() {
     if (!connected) return true;
+
+    globed::netLog("UdpSocket::close(this={}, fd={})", (void*)this, socket_.load());
 
     connected = false;
 #ifdef GEODE_IS_WINDOWS

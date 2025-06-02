@@ -20,6 +20,7 @@ public:
     ~GameSocket();
 
     Result<> connect(const NetworkAddress& address, bool isRecovering);
+    Result<> connectWithRelay(const NetworkAddress& address, const NetworkAddress& relayAddress, bool isRecovering);
     void disconnect();
     bool isConnected();
 
@@ -44,6 +45,14 @@ public:
     // Try to receive a packet, returns "timed out" if timeout is reached.
     Result<ReceivedPacket> recvPacket(int timeoutMs);
 
+    // Receive raw bytes from a TCP socket. if size is not specified, reads 4 bytes from the socket and uses that as the length.
+    // Blocks until either an error occurs, the timeout expires or the data is ready.
+    Result<std::vector<uint8_t>> recvRawTcpData(size_t size, int timeoutMs);
+
+    // Send a payload to the relay server with the udp id
+    Result<> sendRelayUdpStage(uint32_t udpId);
+    Result<> sendRelaySkipUdpLink();
+
     // Send a packet to the currently active connection. Throws if disconnected
     Result<> sendPacket(std::shared_ptr<Packet> packet, Protocol protocol = Protocol::Unspecified);
 
@@ -61,6 +70,7 @@ public:
     void createBox();
 
     void togglePacketLogging(bool enabled);
+    void toggleForceTcp(bool enabled);
 
     enum class PollResult {
         None, Tcp, Udp, Both
@@ -81,6 +91,7 @@ private:
     util::data::byte* dataBuffer;
 
     bool dumpPackets = false;
+    bool forceUseTcp = false;
 
     // Write a packet, packet header, and optionally length if the packet is TCP to the given buffer.
     Result<> encodePacket(Packet& packet, ByteBuffer& buffer, bool tcp);

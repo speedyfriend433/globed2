@@ -10,13 +10,15 @@ public:
     static constexpr float LIST_WIDTH = 358.f;
     static constexpr float LIST_HEIGHT = 220.f;
 
+    bool showingRelays = false;
+
     void forceRefresh();
     void softRefresh();
 
     static GlobedServerList* create();
 
 private:
-    using ServerList = GlobedListLayer<ServerListCell>;
+    using ServerList = GlobedListLayer<cocos2d::CCNode>;
 
     GJListLayer* bgListLayer;
     ServerList* listLayer;

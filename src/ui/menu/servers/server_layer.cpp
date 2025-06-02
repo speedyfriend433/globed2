@@ -1,6 +1,8 @@
 #include "server_layer.hpp"
 
-#include "Geode/binding/CCMenuItemSpriteExtra.hpp"
+#include <matjson/reflect.hpp>
+#include <matjson/stl_serialize.hpp>
+
 #include "switcher/server_switcher_popup.hpp"
 #include <ui/menu/main/kofi_popup.hpp>
 #include <ui/menu/credits/credits_popup.hpp>
@@ -9,6 +11,8 @@
 #include <managers/central_server.hpp>
 #include <managers/game_server.hpp>
 #include <managers/error_queues.hpp>
+#include <managers/settings.hpp>
+#include <managers/friend_list.hpp>
 #include <ui/menu/main/globed_menu_layer.hpp>
 #include <ui/menu/settings/settings_layer.hpp>
 #include <net/manager.hpp>
@@ -20,6 +24,9 @@ using namespace geode::prelude;
 
 bool GlobedServersLayer::init() {
     if (!CCLayer::init()) return false;
+
+    auto& settings = GlobedSettings::get();
+    prevShownRelays = settings.globed.showRelays;
 
     this->setID("GlobedServersLayer"_spr);
 
@@ -43,7 +50,7 @@ bool GlobedServersLayer::init() {
         .collect();
 
     // central server switcher
-    Build<CCSprite>::createSpriteName("accountBtn_myLevels_001.png")
+    Build<CCSprite>::createSpriteName("icon-server-folder.png"_spr)
         .with([&](auto* spr) {
             util::ui::rescaleToMatch(spr, {43.f, 41.5f});
         })
@@ -58,7 +65,7 @@ bool GlobedServersLayer::init() {
         .parent(buttonMenu);
 
     // settings button
-    Build<CCSprite>::createSpriteName("accountBtn_settings_001.png")
+    Build<CCSprite>::createSpriteName("icon-settings.png"_spr)
         .with([&](auto* spr) {
             util::ui::rescaleToMatch(spr, {43.f, 41.5f});
         })
@@ -71,7 +78,7 @@ bool GlobedServersLayer::init() {
 
     buttonMenu->updateLayout();
 
-    // server list and signup layer
+    // server list
     Build<GlobedServerList>::create()
         .zOrder(2)
         .anchorPoint(0.f, 0.f)
@@ -79,21 +86,11 @@ bool GlobedServersLayer::init() {
         .id("server-list")
         .store(serverList);
 
-    Build<GlobedSignupLayer>::create()
-        .zOrder(2)
-        .anchorPoint(0.f, 0.f)
-        .pos(serverList->getPosition())
-        .parent(this)
-        .id("signup-list")
-        .store(signupLayer);
-
     if (util::ui::getAspectRatio() < 1.6f) {
         serverList->setScaleX(0.9f);
-        signupLayer->setScaleX(0.9f);
     }
 
     serverList->setPosition({winSize / 2 - serverList->getScaledContentSize() / 2});
-    signupLayer->setPosition({winSize / 2 - signupLayer->getScaledContentSize() / 2});
 
     // right button menu
     auto* rightButtonMenu = Build<CCMenu>::create()
@@ -144,6 +141,10 @@ bool GlobedServersLayer::init() {
 
     rightButtonMenu->updateLayout();
 
+    // initialize flm here, which should give us enough time to load friend list until a connection is made
+    auto& flm = FriendListManager::get();
+    flm.maybeLoad();
+
     this->schedule(schedule_selector(GlobedServersLayer::updateServerList), 0.1f);
     this->schedule(schedule_selector(GlobedServersLayer::pingServers), 5.0f);
 
@@ -193,21 +194,8 @@ void GlobedServersLayer::updateServerList(float) {
         return;
     }
 
-    // update ping of the active server, if any
-    nm.updateServerPing();
-
-    // if we do not have a session token from the central server, and are not in a standalone server, don't show game servers
-    if (!csm.standalone() && !am.hasAuthKey()) {
-        serverList->setVisible(false);
-        signupLayer->setVisible(true);
-        return;
-    }
-
-    signupLayer->setVisible(false);
-    serverList->setVisible(true);
-
     // if we recently switched a central server, redo everything
-    if ((csm.recentlySwitched || initializing || !serversLoaded) && serversLoadingFor.value_or(-2) != csm.getActiveIndex()) {
+    if ((csm.recentlySwitched || initializing || !serversLoaded) && serversLoadingFor.value_or(-4) != csm.getActiveIndex()) {
         serversLoadingFor = csm.getActiveIndex();
         csm.recentlySwitched = false;
         this->cancelWebRequest();
@@ -221,15 +209,15 @@ void GlobedServersLayer::updateServerList(float) {
 
         serverList->forceRefresh();
 
-        if (!initializing) {
-            this->pingServers(0.f);
-        }
+        this->pingServers(0.f);
 
-        // also disconnect from the current server if it's gone
-        auto activeId = gsm.getActiveId();
-        if (!gsm.getServer(activeId).has_value()) {
-            NetworkManager::get().disconnect(false);
-        }
+        return;
+    }
+
+    auto& settings = GlobedSettings::get();
+    if (settings.globed.showRelays != prevShownRelays) {
+        prevShownRelays = settings.globed.showRelays;
+        serverList->forceRefresh();
 
         return;
     }
@@ -253,7 +241,7 @@ void GlobedServersLayer::requestServerList() {
         return;
     }
 
-    auto request = WebRequestManager::get().fetchServers();
+    auto request = WebRequestManager::get().fetchServerMeta();
 
     requestListener.bind(this, &GlobedServersLayer::requestCallback);
     requestListener.setFilter(std::move(request));
@@ -262,16 +250,17 @@ void GlobedServersLayer::requestServerList() {
 void GlobedServersLayer::requestCallback(typename WebRequestManager::Event* event) {
     if (!event || !event->getValue()) return;
 
+    auto& csm = CentralServerManager::get();
+    auto& gsm = GameServerManager::get();
+
     serversLoadingFor = std::nullopt;
     serversLoaded = true;
 
     auto result = std::move(*event->getValue());
 
     if (!result.ok()) {
-        auto& gsm = GameServerManager::get();
-        gsm.clearCache();
         gsm.clear();
-        gsm.pendingChanges = true;
+        csm.updateCacheForActive("");
 
         ErrorQueues::get().error(fmt::format("Failed to fetch servers.\n\nReason: <cy>{}</c>", result.getError()));
 
@@ -279,17 +268,19 @@ void GlobedServersLayer::requestCallback(typename WebRequestManager::Event* even
     }
 
     auto response = result.text().unwrapOrDefault();
+    auto res = matjson::parseAs<MetaResponse>(response);
 
-    auto& gsm = GameServerManager::get();
-    gsm.updateCache(response);
-    auto loadResult = gsm.loadFromCache();
-    gsm.pendingChanges = true; // idk
-
-    if (loadResult.isErr()) {
-        log::warn("failed to parse server list: {}", loadResult.unwrapErr());
+    if (!res) {
+        gsm.clear();
+        csm.updateCacheForActive("");
+        log::warn("failed to parse server list: {}", res.unwrapErr());
         log::warn("{}", response);
-        ErrorQueues::get().error(fmt::format("Failed to parse server list: <cy>{}</c>", loadResult.unwrapErr()));
+        ErrorQueues::get().error(fmt::format("Failed to parse server list: <cy>{}</c>", res.unwrapErr()));
+        return;
     }
+
+    csm.updateCacheForActive(response);
+    csm.initFromMeta(res.unwrap());
 }
 
 void GlobedServersLayer::cancelWebRequest() {

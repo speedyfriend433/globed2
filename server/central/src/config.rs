@@ -57,6 +57,10 @@ fn default_game_servers() -> Vec<GameServerEntry> {
     }]
 }
 
+fn default_relays() -> Vec<ServerRelay> {
+    Vec::new()
+}
+
 const fn default_status_print_interval() -> u64 {
     7200 // 2 hours
 }
@@ -116,6 +120,10 @@ const fn default_token_expiry() -> u64 {
     60 * 60 * 24
 }
 
+const fn default_opt_string() -> Option<String> {
+    None
+}
+
 /* end stinky serde defaults */
 
 #[derive(PartialEq, Eq, Debug, Default, Clone, Serialize, Deserialize)]
@@ -137,6 +145,13 @@ pub struct GameServerEntry {
     pub region: String,
 }
 
+#[derive(Serialize, Deserialize, Default, Clone)]
+pub struct ServerRelay {
+    pub id: String,
+    pub name: String,
+    pub address: String,
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct ServerConfig {
@@ -144,6 +159,8 @@ pub struct ServerConfig {
     pub web_mountpoint: String,
     #[serde(default = "default_game_servers")]
     pub game_servers: Vec<GameServerEntry>,
+    #[serde(default = "default_relays")]
+    pub relays: Vec<ServerRelay>,
     #[serde(default = "default_false")]
     pub maintenance: bool,
     #[serde(default = "default_status_print_interval")]
@@ -194,6 +211,12 @@ pub struct ServerConfig {
     pub gd_api_gjp: String,
     #[serde(default = "default_gd_api_url")]
     pub gd_api_url: String,
+    #[serde(default = "default_false")]
+    pub use_argon: bool,
+    #[serde(default = "default_string")]
+    pub argon_url: String,
+    #[serde(default = "default_opt_string")]
+    pub argon_token: Option<String>,
     #[serde(default = "default_false")]
     pub skip_name_check: bool,
     #[serde(default = "default_refresh_interval")]

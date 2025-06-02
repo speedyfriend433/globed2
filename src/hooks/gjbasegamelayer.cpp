@@ -11,6 +11,7 @@
 #include <managers/profile_cache.hpp>
 #include <managers/game_server.hpp>
 #include <managers/settings.hpp>
+#include <managers/popup.hpp>
 #include <managers/room.hpp>
 #include <data/packets/client/game.hpp>
 #include <data/packets/client/general.hpp>
@@ -19,6 +20,8 @@
 #include <game/camera_state.hpp>
 #include <hooks/game_manager.hpp>
 #include <hooks/triggers/gjeffectmanager.hpp>
+#include <ui/menu/settings/settings_layer.hpp>
+#include <ui/menu/settings/connection_test_popup.hpp>
 #include <util/math.hpp>
 #include <util/debug.hpp>
 #include <util/cocos.hpp>
@@ -339,6 +342,10 @@ void GlobedGJBGL::setupPacketListeners() {
         }
     });
 
+    nm.addListener<LevelInnerPlayerCountPacket>(this, [this](std::shared_ptr<LevelInnerPlayerCountPacket> packet) {
+        this->getFields().initialPlayerCount = packet->count;
+    });
+
     nm.addListener<ChatMessageBroadcastPacket>(this, [this](std::shared_ptr<ChatMessageBroadcastPacket> packet) {
         this->m_fields->chatMessages.push_back({packet->sender, packet->message});
 
@@ -369,6 +376,15 @@ void GlobedGJBGL::setupPacketListeners() {
         }
 #endif // GLOBED_VOICE_SUPPORT
     });
+
+    nm.addListener<VoiceFailedPacket>(this, [this](std::shared_ptr<VoiceFailedPacket> packet) {
+#ifdef GLOBED_VOICE_SUPPORT
+        auto& fields = this->getFields();
+
+        fields.lastVoiceFailure = fields.timeCounter;
+#endif // GLOBED_VOICE_SUPPORT
+    });
+
 
     GLOBED_EVENT(this, setupPacketListeners());
 }
@@ -609,14 +625,62 @@ void GlobedGJBGL::selPeriodicalUpdate(float dt) {
     // if (!self->isCurrentPlayLayer()) return;
 
     // update the overlay
-    fields.overlay->updatePing(GameServerManager::get().getActivePing());
+    // we dont use gsm.getActivePing because that can throw if we hit some
+    // crazy race condition and are disconnected but the established() call above returned true
+    // (yes, this has happened)
+    auto& gsm = GameServerManager::get();
+    if (auto server = gsm.getActiveServer()) {
+        fields.overlay->updatePing(server->ping);
+    }
 
     auto& pcm = ProfileCacheManager::get();
 
     util::collections::SmallVector<int, 32> toRemove;
 
+    auto sinceUpdate = fields.timeCounter - fields.lastServerUpdate;
+
     // if more than a second passed and there was only 1 player, they probably left
-    if (fields.timeCounter - fields.lastServerUpdate > 1.0f && fields.players.size() < 2) {
+    if (fields.lastServerUpdate == 0.0f && sinceUpdate > 5.f && fields.initialPlayerCount >= 10 && !fields.shownFragmentationAlert) {
+        fields.shownFragmentationAlert = true;
+
+        // if there were any players on the level when we first joined, but we never got a packet with their data,
+        // then we probably have an incorrect packet limit set and we need to fix this.
+
+        auto limit = GlobedSettings::get().globed.fragmentationLimit.get();
+
+        if (limit > 0 && limit < 60000) {
+            // user set the limit manually, ignore this ig
+            log::warn(
+                "Missing players detected (should be {} but have none), not showing frag test because user has a custom limit set: {}",
+                fields.initialPlayerCount, limit
+            );
+        } else {
+            log::warn("Missing players detected (should be {} but have none), prompting for connection test", fields.initialPlayerCount);
+
+            // force pause the game
+            if (!self->isEditor() && !self->isPaused()) {
+                static_cast<PlayLayer*>(static_cast<GJBaseGameLayer*>(self))->pauseGame(false);
+            }
+
+            // show alert
+            PopupManager::get().quickPopup(
+                "Globed Warning",
+                "We have detected that there are <cr>issues</c> in the connection, and Globed is having troubles showing other players for you. Do you want to try and run a <cg>connection test</c>, which will likely solve this issue? This action will <cy>exit</c> the current level.",
+                "No",
+                "Yes",
+                [](auto, bool res) {
+                    if (!res) {
+                        PopupManager::get().alert(
+                            "Globed Warning",
+                            "If you want to silence this warning in the future, open settings and set Fragmentation Limit to a different value, for example 1400."
+                        ).showInstant();
+                    } else {
+                        util::ui::replaceScene(GlobedSettingsLayer::create(true));
+                    }
+                }
+            ).showQueue();
+        }
+    } else if (sinceUpdate > 1.0f && fields.players.size() < 2) {
         for (const auto& [playerId, _] : fields.players) {
             toRemove.push_back(playerId);
         }
@@ -625,7 +689,7 @@ void GlobedGJBGL::selPeriodicalUpdate(float dt) {
             self->handlePlayerLeave(id);
         }
     } else {
-        util::collections::SmallVector<int, 256> ids;
+        util::collections::SmallVector<int, 8> ids;
 
         // kick players that have left the level
         for (const auto& [playerId, remotePlayer] : fields.players) {
@@ -650,7 +714,9 @@ void GlobedGJBGL::selPeriodicalUpdate(float dt) {
                 }
 
                 if (remotePlayer->getDefaultTicks() == 0) {
-                    ids.push_back(playerId);
+                    if (ids.size() < ids.capacity()) {
+                        ids.push_back(playerId);
+                    }
                 }
 
                 remotePlayer->incDefaultTicks();
@@ -660,7 +726,7 @@ void GlobedGJBGL::selPeriodicalUpdate(float dt) {
             }
         }
 
-        if (ids.size() > 3) {
+        if (ids.size() > 5) {
             NetworkManager::get().send(RequestPlayerProfilesPacket::create(0));
         } else {
             for (int id : ids) {
@@ -691,7 +757,6 @@ void GlobedGJBGL::selUpdate(float timescaledDt) {
 
     if (!self) return;
 
-
     // timescale silently changing dt isn't very good when doing network interpolation >_>
     // since timeCounter needs to agree with everyone else on how long a second is!
     float dt = timescaledDt / CCScheduler::get()->getTimeScale();
@@ -710,7 +775,7 @@ void GlobedGJBGL::selUpdate(float timescaledDt) {
     fields.camState.zoom = self->m_objectLayer->getScale();
 
     // update ourselves
-    auto accountId = GJAccountManager::get()->m_accountID;
+    auto accountId = globed::cachedSingleton<GJAccountManager>()->m_accountID;
     fields.playerStore->insertOrUpdate(
         accountId,
         self->m_level->m_attempts,
@@ -736,6 +801,12 @@ void GlobedGJBGL::selUpdate(float timescaledDt) {
     auto& settings = GlobedSettings::get();
 
     for (const auto [playerId, remotePlayer] : fields.players) {
+        // this should never happen, yet somehow it does for that one person
+        if (!fields.interpolator->hasPlayer(playerId)) {
+            log::error("Interpolator is missing a player: {}", playerId);
+            continue;
+        }
+
         auto& vstate = fields.interpolator->getPlayerState(playerId);
 
         auto frameFlags = fields.interpolator->swapFrameFlags(playerId);
@@ -767,8 +838,9 @@ void GlobedGJBGL::selUpdate(float timescaledDt) {
         float pos = (fields.ownNameLabel && fields.ownNameLabel->isVisible()) ? 40.f : 25.f;
         fields.selfStatusIcons->setPosition(self->m_player1->getPosition() + CCPoint{0.f, pos});
         bool recording = VoiceRecordingManager::get().isRecording();
+        bool recordingFailing = std::fabs(fields.lastVoiceFailure - fields.timeCounter) < 5.f;
 
-        fields.selfStatusIcons->updateStatus(false, false, recording, false, 0.f);
+        fields.selfStatusIcons->updateStatus(false, false, recording, recordingFailing, false, 0.f);
     }
 
     if (fields.voiceOverlay) {

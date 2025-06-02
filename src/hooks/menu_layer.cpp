@@ -16,6 +16,7 @@
 #include <util/net.hpp>
 #include <util/ui.hpp>
 
+#include <argon/argon.hpp>
 #include <asp/fs.hpp>
 
 using namespace geode::prelude;
@@ -26,10 +27,13 @@ bool HookedMenuLayer::init() {
     // reset integrity check state here
     globed::resetIntegrityCheck();
 
-    if (!globed::softDisabled()) {
+    if (!globed::hasSeverelyBrokenResources()) {
         // auto connect
         util::misc::callOnce("menu-layer-init-autoconnect", []{
-            if (!GlobedSettings::get().globed.autoconnect) return;
+            auto& settings = GlobedSettings::get();
+
+            if (!settings.globed.autoconnect) return;
+            if (!settings.flags.seenSignupNoticev3) return;
 
             auto& csm = CentralServerManager::get();
             auto& gsm = GameServerManager::get();
@@ -46,7 +50,7 @@ bool HookedMenuLayer::init() {
                     ErrorQueues::get().warn(fmt::format("[Globed] Failed to connect: {}", result.unwrapErr()));
                 }
             } else {
-                auto cacheResult = gsm.loadFromCache();
+                auto cacheResult = csm.initFromCache();
                 if (cacheResult.isErr()) {
                     ErrorQueues::get().debugWarn(fmt::format("failed to autoconnect: {}", cacheResult.unwrapErr()));
                     return;
@@ -59,17 +63,41 @@ bool HookedMenuLayer::init() {
                     return;
                 };
 
-                if (!am.hasAuthKey()) {
+                auto doConnect = [&am, &csm, lastServer] {
+                    am.requestAuthToken([lastServer](bool success) {
+                        if (!success) {
+                            return;
+                        }
+
+                        auto result = NetworkManager::get().connect(lastServer.value());
+
+                        if (result.isErr()) {
+                            ErrorQueues::get().warn(fmt::format("[Globed] Failed to connect: {}", result.unwrapErr()));
+                        }
+                    }, csm.activeArgonUrl().has_value());
+                };
+
+                bool useArgon = csm.activeHasAuth() && csm.activeArgonUrl().has_value();
+
+                if (!useArgon && !am.hasAuthKey()) {
                     // no authkey, don't autoconnect
                     return;
-                }
+                } else if (useArgon) {
+                    // request the argon token, only then connect
+                    (void) argon::setServerUrl(csm.activeArgonUrl().value());
+                    argon::setCertVerification(!settings.launchArgs().noSslVerification);
+                    (void) argon::startAuth([&am, doConnect](Result<std::string> token) {
+                        if (token) {
+                            am.storeArgonToken(token.unwrap());
+                            doConnect();
+                        } else {
+                            log::warn("Argon auth failed: {}", token.unwrapErr());
+                        }
+                    });
 
-                am.requestAuthToken([lastServer] {
-                    auto result = NetworkManager::get().connect(lastServer.value());
-                    if (result.isErr()) {
-                        ErrorQueues::get().warn(fmt::format("[Globed] Failed to connect: {}", result.unwrapErr()));
-                    }
-                });
+                } else {
+                    doConnect();
+                }
             }
         });
     }
@@ -135,7 +163,7 @@ void HookedMenuLayer::maybeUpdateButton(float) {
 }
 
 void HookedMenuLayer::onGlobedButton(CCObject*) {
-    if (globed::softDisabled()) {
+    if (globed::hasSeverelyBrokenResources()) {
         geode::createQuickPopup(
             "Globed Error",
             "<cy>Outdated resources</c> were detected. The mod has been <cr>disabled</c> to prevent crashes.\n\nIf you have any <cg>texture packs</c>, or mods that change textures, please try <cy>disabling</c> them.",
@@ -178,17 +206,20 @@ void HookedMenuLayer::onGlobedButton(CCObject*) {
                     );
                 } else if (report.hasTexturePack || report.darkmodeEnabled) {
                     std::string enabledtxt;
+
                     if (report.hasTexturePack) {
-                        enabledtxt += "Texture pack detected: <cg>yes</c>\n";
+                        enabledtxt += "<cy>A texture pack</c> that <cj>modifies Globed textures</c> was detected. Please try to <cr>disable</c> this texture pack and wait until the creator updates it.\n";
+                    } else if (report.darkmodeEnabled) {
+                        enabledtxt += "<cy>DarkMode v4</c> mod was detected, this mod <cj>modifies Globed textures</c>. Please try to <cr>disable</c> it and wait until the creator updates it.\n";
                     }
 
-                    if (report.darkmodeEnabled) {
-                        enabledtxt += "DarkMode v4 enabled: <cg>yes</c>\n";
+                    if (report.sheetFilesSeparated) {
+                        enabledtxt += "If you are the author of the texture pack, please include the <cg>.plist files</c> of spritesheets in your texture pack to resolve this.\n";
                     }
 
                     PopupManager::get().alertFormat(
                         "Note",
-                        "{}\nPlease try to <cr>disable</c> these and see if the issue is resolved after restarting.\n\nDebug data: <cy>{}</c>",
+                        "{}\nDebug data: <cy>{}</c>",
                         enabledtxt, debugData
                     ).showInstant();
                 } else {
@@ -207,7 +238,7 @@ void HookedMenuLayer::onGlobedButton(CCObject*) {
                         }
                     );
                 }
-            });
+        });
 
         return;
     }
@@ -215,6 +246,27 @@ void HookedMenuLayer::onGlobedButton(CCObject*) {
     auto accountId = GJAccountManager::sharedState()->m_accountID;
     if (accountId <= 0) {
         PopupManager::get().alert("Notice", "You need to be signed into a <cg>Geometry Dash account</c> in order to play online.").showInstant();
+        return;
+    }
+
+    auto& settings = GlobedSettings::get();
+    if (!settings.flags.seenSignupNoticev3) {
+        PopupManager::get().manage(MDPopup::create(
+            "Note",
+            "To <cg>improve user experience</c>, Globed needs to access your GD account, specifically:\n\n"
+            "* Send a <cy>message</c> to a <cj>bot account</c>, to <cg>verify</c> your account. The message will be <cj>automatically deleted</c>.\n"
+            "* Send your <cy>friend list</c> to the <cj>Globed server</c>, for features like friend-only invites (and some others) to work."
+            " This data is <cg>never stored or logged</c> on the server, and is <cr>deleted</c> once you disconnect.\n\n"
+            "If you do <cr>not</c> consent to this, press 'Cancel'.",
+            "Cancel", "Ok",
+            [this, &settings](bool yea) {
+                if (!yea) return;
+
+                settings.flags.seenSignupNoticev3 = true;
+                this->onGlobedButton(this);
+            }
+        )).showInstant();
+
         return;
     }
 

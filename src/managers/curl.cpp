@@ -101,19 +101,29 @@ CurlManager::Task CurlManager::send(CurlRequest& req) {
             curl_easy_setopt(curl, CURLOPT_POSTFIELDS, "");
         }
 
-        if (data->m_certVerification && !GlobedSettings::get().launchArgs().noSslVerification) {
-            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1);
-            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2);
+        int sslOptions = 0;
 
+        if (data->m_certVerification && !GlobedSettings::get().launchArgs().noSslVerification) {
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+
+            // Our windows build of curl uses schannel, don't set the cacerts and use system store instead.
             curl_blob cbb = {};
-            cbb.data = const_cast<void*>(reinterpret_cast<const void*>(CA_BUNDLE_CONTENT));
-            cbb.len = sizeof(CA_BUNDLE_CONTENT);
-            cbb.flags = CURL_BLOB_COPY;
+            cbb.data = const_cast<void*>(static_cast<const void*>(CA_BUNDLE_CONTENT));
+            cbb.len = sizeof(CA_BUNDLE_CONTENT) - 1;
+            cbb.flags = CURL_BLOB_NOCOPY;
             curl_easy_setopt(curl, CURLOPT_CAINFO_BLOB, &cbb);
+
+            // Also add the native CA, for good measure
+            sslOptions |= CURLSSLOPT_NATIVE_CA;
         } else {
-            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
-            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0);
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
         }
+
+        // weird windows stuff, don't remove if we still use schannel!
+        GEODE_WINDOWS(sslOptions |= CURLSSLOPT_REVOKE_BEST_EFFORT);
+        curl_easy_setopt(curl, CURLOPT_SSL_OPTIONS, sslOptions);
 
         if (!data->m_userAgent.empty()) {
             curl_easy_setopt(curl, CURLOPT_USERAGENT, data->m_userAgent.c_str());
@@ -165,8 +175,9 @@ CurlManager::Task CurlManager::send(CurlRequest& req) {
         }));
 
 
-        curl_easy_setopt(curl, CURLOPT_PROGRESSDATA, &hasBeenCancelled);
-        curl_easy_setopt(curl, CURLOPT_PROGRESSFUNCTION, +[](void* ptr, double dtotal, double dnow, double utotal, double unow) -> int {
+        curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &hasBeenCancelled);
+        curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+        curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, +[](void* ptr, curl_off_t dtotal, curl_off_t dnow, curl_off_t utotal, curl_off_t unow) -> int {
             auto& hbc = *static_cast<decltype(hasBeenCancelled)*>(ptr);
 
             // check if request was cancelled

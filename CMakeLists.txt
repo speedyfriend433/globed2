@@ -26,6 +26,7 @@ option(GLOBED_DEBUG_PACKETS_PRINT "Print every incoming/outgoing packet" OFF)
 option(GLOBED_LESS_BINDINGS "Disable extra hooks & calls to some GD functions, useful when porting to a new GD version" OFF)
 option(GLOBED_GP_CHANGES "a" OFF)
 option(GLOBED_LINK_TO_FMOD "Whether to link to FMOD, disables voice chat if off" ON)
+option(GLOBED_ENABLE_STACKTRACE "Whether to enable stacktrace library" OFF)
 
 # on windows use precompiled, on other platforms compile libsodium
 if (WIN32)
@@ -40,19 +41,19 @@ include(cmake/environment.cmake)
 # Add platform-specific sources
 if (ANDROID)
     file(GLOB_RECURSE OS_SOURCES CONFIGURE_DEPENDS "src/platform/os/android/*.cpp" "src/platform/arch/arm/*.cpp")
-elseif("${CMAKE_SYSTEM_NAME}" STREQUAL "iOS")
-    file(GLOB_RECURSE OS_SOURCES CONFIGURE_DEPENDS "src/platform/os/ios/*.cpp" "src/platform/arch/arm/*.cpp")
+elseif (APPLE AND GLOBED_IOS)
+    file(GLOB_RECURSE OS_SOURCES CONFIGURE_DEPENDS "src/platform/os/ios/*.cpp" "src/platform/arch/arm/*.cpp" "src/platform/os/ios/*.mm")
 elseif (APPLE)
-    if (GLOBED_IOS)
-        file(GLOB_RECURSE OS_SOURCES CONFIGURE_DEPENDS "src/platform/os/ios/*.cpp" "src/platform/arch/arm/*.cpp")
-    else()
-        file(GLOB_RECURSE OS_SOURCES CONFIGURE_DEPENDS "src/platform/os/mac/*.cpp" "src/platform/arch/x86/*.cpp" "src/platform/arch/arm/*.cpp")
-    endif()
+    file(GLOB_RECURSE OS_SOURCES CONFIGURE_DEPENDS "src/platform/os/mac/*.cpp" "src/platform/arch/x86/*.cpp" "src/platform/arch/arm/*.cpp" "src/platform/os/mac/*.mm")
 elseif (WIN32)
     file(GLOB_RECURSE OS_SOURCES CONFIGURE_DEPENDS "src/platform/os/windows/*.cpp" "src/platform/arch/x86/*.cpp")
 else()
     message(FATAL_ERROR "Unsupported operating system")
 endif()
+
+# i still hate this
+set_source_files_properties(src/platform/os/ios/objc.mm PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+set_source_files_properties(src/platform/os/mac/objc.mm PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 
 # source files
 file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS
@@ -153,11 +154,12 @@ CPMAddPackage("gh:dankmeme01/uibuilder#456706b")
 CPMAddPackage(
     NAME Boost
     VERSION 1.88.0
-    URL https://github.com/boostorg/boost/releases/download/boost-1.88.0/boost-1.88.0-cmake.7z
-    URL_HASH SHA256=feba537f6d32c062ed0f26b4d6e5b8e8450d51ef81492369a101ab99fcead278
+    GITHUB_REPOSITORY boostorg/boost
+    GIT_TAG boost-1.88.0
     OPTIONS "BOOST_ENABLE_CMAKE ON" "BOOST_INCLUDE_LIBRARIES describe" # escape with \\\;
 )
-CPMAddPackage("gh:dankmeme01/asp2#e422b95")
+CPMAddPackage("gh:dankmeme01/asp2#5b0bae3")
+CPMAddPackage("gh:GlobedGD/argon@1.1.5")
 
 # defines for asp (std::format is only available on windows currently)
 if (WIN32)
@@ -173,8 +175,6 @@ include(cmake/baked_resources_gen.cmake)
 generate_baked_resources_header("${CMAKE_CURRENT_SOURCE_DIR}/embedded-resources.json" "${CMAKE_CURRENT_BINARY_DIR}/globed-codegen/embedded_resources.hpp")
 
 if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    target_compile_options(${PROJECT_NAME} PRIVATE "-Wno-deprecated-declarations")
-
     # these can be enabled to see what's taking up the most compile time
     # target_compile_options(${PROJECT_NAME} PRIVATE "-ftime-trace")
     # target_compile_options(asp PRIVATE "-ftime-trace")
@@ -184,9 +184,9 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID MATCHES "Clang
 endif()
 
 # link to all libraries
-target_link_libraries(${PROJECT_NAME} UIBuilder Boost::describe asp)
+target_link_libraries(${PROJECT_NAME} UIBuilder Boost::describe asp argon)
 
-if (GLOBED_IS_DEBUG)
+if (GLOBED_ENABLE_STACKTRACE)
     # stacktrace library
     CPMAddPackage("gh:jeremy-rifkin/cpptrace#v0.8.2")
     target_link_libraries(${PROJECT_NAME} cpptrace::cpptrace)
@@ -289,7 +289,7 @@ if (WIN32)
     if (GLOBED_IS_DEBUG)
         set_target_properties(curl PROPERTIES IMPORTED_LOCATION "$ENV{GEODE_SDK}/loader/include/link/${LIB_PLATFORM}/gd-libcurl.lib")
     else()
-        set_target_properties(curl PROPERTIES IMPORTED_LOCATION "$ENV{GEODE_SDK}/loader/include/link/${LIB_PLATFORM}/libcurl.lib")
+        set_target_properties(curl PROPERTIES IMPORTED_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/libs/libcurl.lib") # TODO: replace this back to the geode path
     endif()
 else()
     set_target_properties(curl PROPERTIES IMPORTED_LOCATION "$ENV{GEODE_SDK}/loader/include/link/${LIB_PLATFORM}/libcurl.a")

@@ -36,6 +36,17 @@ class LevelPlayerMetadataPacket : public Packet {
 
 GLOBED_SERIALIZABLE_STRUCT(LevelPlayerMetadataPacket, (players));
 
+// 22003 - LevelInnerPlayerCountPacket
+class LevelInnerPlayerCountPacket : public Packet {
+    GLOBED_PACKET(22003, LevelInnerPlayerCountPacket, false, false)
+
+    LevelInnerPlayerCountPacket() {}
+
+    uint32_t count;
+};
+
+GLOBED_SERIALIZABLE_STRUCT(LevelInnerPlayerCountPacket, (count));
+
 #ifdef GLOBED_VOICE_SUPPORT
 # include <audio/frame.hpp>
 #endif
@@ -69,3 +80,14 @@ class ChatMessageBroadcastPacket : public Packet {
 };
 
 GLOBED_SERIALIZABLE_STRUCT(ChatMessageBroadcastPacket, (sender, message));
+
+// 22012 - VoiceFailedPacket
+class VoiceFailedPacket : public Packet {
+    GLOBED_PACKET(22012, VoiceFailedPacket, false, false)
+
+    VoiceFailedPacket() {}
+
+    bool userMuted;
+};
+
+GLOBED_SERIALIZABLE_STRUCT(VoiceFailedPacket, (userMuted));

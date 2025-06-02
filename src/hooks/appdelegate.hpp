@@ -6,11 +6,11 @@
 #include <util/time.hpp>
 
 struct GLOBED_DLL GlobedAppDelegate : geode::Modify<GlobedAppDelegate, AppDelegate> {
-#ifdef GEODE_IS_ANDROID
+#ifdef GEODE_IS_MOBILE
     $override
     void applicationDidEnterBackground();
 
     $override
     void applicationWillEnterForeground();
-#endif // GEODE_IS_ANDROID
+#endif // GEODE_IS_MOBILE
 };

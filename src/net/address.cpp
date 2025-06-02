@@ -6,6 +6,7 @@
 # include <netinet/in.h>
 #endif
 
+#include <managers/settings.hpp>
 #include <util/format.hpp>
 #include <util/net.hpp>
 
@@ -41,6 +42,8 @@ std::string NetworkAddress::toString() const {
 }
 
 Result<sockaddr_in> NetworkAddress::resolve() const {
+    globed::netLog("Resolving host {}", host);
+
     if (host.empty()) {
         return Err("empty IP address or domain name, cannot resolve");
     }
@@ -51,6 +54,24 @@ Result<sockaddr_in> NetworkAddress::resolve() const {
         out.sin_family = AF_INET;
         out.sin_port = util::net::hostToNetworkPort(port);
         out.sin_addr = dnsCache.at(host);
+
+        // TODO This code causes clang to crash, uncomment when they fix it :)
+        // https://github.com/llvm/llvm-project/issues/138428
+
+        // globed::netLog(
+        //     "Host was cached, returning '{}'",
+        //     GLOBED_LAZY(util::net::inAddrToString(out.sin_addr).unwrapOrElse([] { return "<error stringifying>"; }))
+        // );
+
+        auto doConvert = [&] {
+            return util::net::inAddrToString(out.sin_addr).unwrapOrElse([] { return "<error stringifying>"; });
+        };
+
+        globed::netLog(
+            "Host was cached, returning '{}'",
+            GLOBED_LAZY(doConvert())
+        );
+
         return Ok(out);
     }
 
@@ -64,6 +85,22 @@ Result<sockaddr_in> NetworkAddress::resolve() const {
     if (!ipResult) {
         GLOBED_UNWRAP(util::net::getaddrinfo(host, *addr));
     }
+
+    // TODO: same as the todo above
+    // globed::netLog(
+    //     "Adding host to DNS cache ('{}' -> '{}')",
+    //     host,
+    //     GLOBED_LAZY(util::net::inAddrToString(addr->sin_addr).unwrapOrElse([] { return "<error stringifying>"; }))
+    // );
+
+    auto doConvert = [&] {
+        return util::net::inAddrToString(addr->sin_addr).unwrapOrElse([] { return "<error stringifying>"; });
+    };
+
+    globed::netLog(
+        "Adding host to DNS cache ('{}' -> '{}')",
+        host, GLOBED_LAZY(doConvert())
+    );
 
     // add to cache
     dnsCache.emplace(std::make_pair(host, addr->sin_addr));
@@ -83,4 +120,8 @@ Result<std::string> NetworkAddress::resolveToString() const {
     GLOBED_UNWRAP_INTO(util::net::inAddrToString(addr.sin_addr), auto ipstr);
 
     return Ok(std::move(ipstr + ":" + std::to_string(port)));
+}
+
+bool NetworkAddress::isEmpty() const {
+    return host.empty();
 }

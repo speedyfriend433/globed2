@@ -1,8 +1,11 @@
 #include "server_list.hpp"
 
 #include "server_list_cell.hpp"
+#include "relay_tip_cell.hpp"
 #include <net/manager.hpp>
 #include <managers/game_server.hpp>
+#include <managers/settings.hpp>
+#include <managers/web.hpp>
 #include <util/ui.hpp>
 
 using namespace geode::prelude;
@@ -23,7 +26,7 @@ bool GlobedServerList::init() {
 
     this->setContentSize(bgListLayer->getScaledContentSize());
 
-    Build<ServerList>::create(LIST_WIDTH, LIST_HEIGHT - 2.f, globed::color::Brown, ServerListCell::CELL_HEIGHT)
+    Build<ServerList>::create(LIST_WIDTH, LIST_HEIGHT - 2.f, globed::color::Brown)
         .zOrder(3)
         .anchorPoint(0.5f, 0.5f)
         .pos(bgListLayer->getScaledContentSize() / 2.f)
@@ -45,14 +48,12 @@ void GlobedServerList::forceRefresh() {
 void GlobedServerList::softRefresh() {
     auto& gsm = GameServerManager::get();
 
-    auto active = gsm.getActiveId();
-
-    bool authenticated = NetworkManager::get().established();
-
-    for (auto* slc : *listLayer) {
-        auto server = gsm.getServer(slc->gsview.id);
-        if (server.has_value()) {
-            slc->updateWith(server.value(), authenticated && slc->gsview.id == active);
+    for (auto* cell : *listLayer) {
+        if (auto slc = typeinfo_cast<ServerListCell*>(cell)) {
+            auto server = gsm.getServer(slc->gsview.id);
+            if (server.has_value()) {
+                slc->updateWith(server.value());
+            }
         }
     }
 }
@@ -60,17 +61,19 @@ void GlobedServerList::softRefresh() {
 CCArray* GlobedServerList::createServerList() {
     auto ret = CCArray::create();
 
+    auto& gs = GlobedSettings::get();
     auto& nm = NetworkManager::get();
     auto& gsm = GameServerManager::get();
-
-    bool authenticated = nm.established();
-
-    auto activeServer = gsm.getActiveId();
+    auto& wrm = WebRequestManager::get();
 
     for (const auto& [serverId, server] : gsm.getAllServers()) {
-        bool active = authenticated && serverId == activeServer;
-        auto cell = ServerListCell::create(server, active);
+        auto cell = ServerListCell::create(server);
         ret->addObject(cell);
+    }
+
+    showingRelays = (gs.globed.showRelays || wrm.isRussian() || !gsm.getActiveRelayId().empty()) && gsm.hasRelays();
+    if (showingRelays) {
+        ret->addObject(RelayTipCell::create());
     }
 
     return ret;

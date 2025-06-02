@@ -5,7 +5,8 @@
 #include <filesystem>
 
 namespace globed {
-    bool softDisabled();
+    bool hasBrokenResources();
+    bool hasSeverelyBrokenResources();
     bool useFallbackMenuButton();
     void resetIntegrityCheck();
 
@@ -33,7 +34,8 @@ namespace globed {
         std::string asDebugData();
     };
 
-    IntegrityReport getIntegrityReport();
+    IntegrityReport& getIntegrityReport();
+    IntegrityReport createIntegrityReport();
 
     const std::filesystem::path& getLatestLogFile();
 }

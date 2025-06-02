@@ -1,4 +1,12 @@
-#![feature(sync_unsafe_cell, duration_constructors, async_closure, iter_collect_into, let_chains, if_let_guard)]
+#![feature(
+    sync_unsafe_cell,
+    duration_constructors,
+    duration_constructors_lite,
+    iter_collect_into,
+    let_chains,
+    if_let_guard,
+    string_remove_matches
+)]
 #![allow(
     clippy::must_use_candidate,
     clippy::module_name_repetitions,
@@ -147,6 +155,8 @@ fn parse_configuration() -> StartupConfiguration {
 #[allow(clippy::too_many_lines)]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    let enable_console = std::env::var("GLOBED_TOKIO_CONSOLE").is_ok_and(|x| x != "0");
+
     // Setup logger
 
     let write_to_file = std::env::var("GLOBED_GS_NO_FILE_LOG").map(|p| p.parse::<i32>().unwrap()).unwrap_or(0) == 0;
@@ -162,6 +172,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         abort_misconfig();
     }
 
+    if enable_console {
+        info!("Tokio console enabled!");
+        console_subscriber::init();
+    }
+
     // set the interrupt handler to flush the logfile and exit
 
     if let Err(e) = ctrlc::set_handler(move || {
@@ -173,11 +188,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // setup tokio-console in debug builds
-
-    // if cfg!(all(tokio_unstable, feature = "use_tokio_tracing")) {
-    //     info!("Initializing tokio-console subscriber");
-    //     console_subscriber::init();
-    // }
 
     // parse the configuration from environment variables or command line
 

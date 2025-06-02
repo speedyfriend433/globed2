@@ -1,7 +1,10 @@
 #include "send_notice_popup.hpp"
 
+#include <data/packets/server/admin.hpp>
 #include <net/manager.hpp>
 #include <managers/error_queues.hpp>
+#include <managers/popup.hpp>
+#include <ui/general/intermediary_loading_popup.hpp>
 #include <util/ui.hpp>
 #include <util/misc.hpp>
 #include <util/format.hpp>
@@ -109,16 +112,48 @@ void AdminSendNoticePopup::commonSend(AdminSendNoticeType type) {
     uint32_t roomId = 0;
     int levelId = 0;
     bool canReply = false;
+    bool estimate = false;
 
     if (type == AdminSendNoticeType::RoomOrLevel) {
         levelId = util::format::parse<int>(levelInput->getString()).value_or(0);
         roomId = util::format::parse<uint32_t>(roomInput->getString()).value_or(0);
-    } else {
+    } else if (type == AdminSendNoticeType::Person) {
         canReply = userCanReplyCheckbox->isOn();
     }
 
-    auto packet = AdminSendNoticePacket::create(type, roomId, levelId, userInput->getString(), message, canReply);
+    // Estimate first
+    if (type != AdminSendNoticeType::Person) {
+        estimate = !m_alreadyEstimated;
+    }
+
+    auto packet = AdminSendNoticePacket::create(type, roomId, levelId, userInput->getString(), message, canReply, estimate);
     NetworkManager::get().send(packet);
+
+    if (estimate) {
+        IntermediaryLoadingPopup::create([this, type](auto popup) {
+            auto& nm = NetworkManager::get();
+            nm.addListener<AdminNoticeRecipientCountPacket>(popup, [this, type, popup](auto packet) {
+                popup->forceClose();
+
+                PopupManager::get().quickPopup(
+                    "Note",
+                    fmt::format("This action will send a notice to <cy>{}</c> people. Are you sure you want to proceed?", packet->count),
+                    "Cancel",
+                    "Yes",
+                    [this, type](auto, bool yes) {
+                        if (!yes) return;
+
+                        this->commonSend(type);
+                    }
+                ).showInstant();
+            });
+
+        }, [](auto) {})->show();
+
+        m_alreadyEstimated = true;
+    } else {
+        m_alreadyEstimated = false;
+    }
 }
 
 AdminSendNoticePopup* AdminSendNoticePopup::create(std::string_view message) {

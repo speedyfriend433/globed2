@@ -3,6 +3,7 @@
 #include "setting_header_cell.hpp"
 #include "setting_cell.hpp"
 #include "save_slot_switcher_popup.hpp"
+#include "connection_test_popup.hpp"
 #include <managers/settings.hpp>
 #include <util/ui.hpp>
 #include <util/cocos.hpp>
@@ -12,9 +13,10 @@ using SettingType = GlobedSettingCell::Type;
 
 static constexpr float TAB_SCALE = 0.85f;
 
-bool GlobedSettingsLayer::init() {
+bool GlobedSettingsLayer::init(bool showConnectionTest) {
     if (!CCLayer::init()) return false;
 
+    this->doShowConnectionTest = showConnectionTest;
     this->prevSettingsSlot = GlobedSettings::get().getSelectedSlot();
     this->setID("GlobedSettingsLayer"_spr);
 
@@ -139,7 +141,7 @@ void GlobedSettingsLayer::update(float dt) {
     // yeah so alk would probably demote me from lead dev for this code but it is what it is
     // yeah im gonna kill you - lime
 
-    auto newLayer = GlobedSettingsLayer::create();
+    auto newLayer = GlobedSettingsLayer::create(false);
 
     for (auto tab : storedTabs) {
         tab.second->removeFromParent();
@@ -193,6 +195,14 @@ void GlobedSettingsLayer::onTabById(int tag) {
 
 void GlobedSettingsLayer::keyBackClicked() {
     util::ui::navigateBack();
+}
+
+void GlobedSettingsLayer::onEnterTransitionDidFinish() {
+    if (!doShowConnectionTest) return;
+
+    Loader::get()->queueInMainThread([] {
+        ConnectionTestPopup::create()->show();
+    });
 }
 
 void GlobedSettingsLayer::remakeList() {
@@ -270,6 +280,8 @@ void GlobedSettingsLayer::createSettingsCells(int category) {
             registerSetting(cat, settings.globed.editorSupport, "View players in editor", "Enables the ability to see people playing your level while in the editor. Note: <cy>this does not let you build levels together!</c>");
             registerSetting(cat, settings.dummySetting, "Keybinds", "Opens the <cg>Keybinds Settings</c>.", Type::KeybindSettings);
             registerSetting(cat, settings.globed.fragmentationLimit, "Packet limit", "Press the \"Test\" button to calibrate the maximum packet size. Should fix some of the issues with players not appearing in a level.", Type::PacketFragmentation);
+            registerSetting(cat, settings.globed.forceTcp, "Force TCP", "Forces the use of TCP for <cg>all packets</c>. This may help with some connection issues, but it also may result in higher latency and less smooth gameplay. <cy>Reconnect to the server to see changes.</c>");
+            registerSetting(cat, settings.globed.showRelays, "Show server relays", "Shows <cg>server relays</c> in the server list, if the current server has any. Relays can help if experiencing connection issues. Note: this feature is <cp>experimental</c>.");
 
 #ifndef GEODE_IS_ANDROID
             registerSetting(cat, settings.globed.useDiscordRPC, "Discord RPC", "If you have the Discord Rich Presence standalone mod, this option will toggle a Globed-specific RPC on your profile.", Type::DiscordRPC);
@@ -301,6 +313,7 @@ void GlobedSettingsLayer::createSettingsCells(int category) {
             registerSetting(cat, settings.communication.voiceVolume, "Voice volume", "Controls how loud other players are.");
             registerSetting(cat, settings.communication.onlyFriends, "Only friends", "When enabled, you won't hear players that are not on your friend list in-game.");
             registerSetting(cat, settings.communication.lowerAudioLatency, "Lower audio latency", "Decreases the audio buffer size by 2 times, reducing the latency but potentially causing audio issues.");
+            registerSetting(cat, settings.communication.tcpAudio, "TCP Voice chat", "Uses TCP instead of UDP for voice chat, may sometimes help with voice chat not working");
             registerSetting(cat, settings.communication.deafenNotification, "Deafen notification", "Shows a notification when you deafen & undeafen.");
             registerSetting(cat, settings.communication.audioDevice, "Audio device", "The input device used for recording your voice.", Type::AudioDevice);
             // MAKE_SETTING(communication, voiceLoopback, "Voice loopback", "When enabled, you will hear your own voice as you speak.");
@@ -358,9 +371,9 @@ GJListLayer* GlobedSettingsLayer::makeListLayer(int category) {
     return listLayer;
 }
 
-GlobedSettingsLayer* GlobedSettingsLayer::create() {
+GlobedSettingsLayer* GlobedSettingsLayer::create(bool showConnectionTest) {
     auto ret = new GlobedSettingsLayer;
-    if (ret->init()) {
+    if (ret->init(showConnectionTest)) {
         ret->autorelease();
         return ret;
     }

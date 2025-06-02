@@ -40,13 +40,15 @@ static RequestTask mapTask(CurlManager::Task&& param) {
     return param;
 }
 
-RequestTask WebRequestManager::requestAuthToken() {
+RequestTask WebRequestManager::requestAuthToken(bool argon) {
     auto& gam = GlobedAccountManager::get();
 
     auto authkey = gam.getAuthKey().value_or("");
+    auto argonToken = gam.getArgonToken();
+
     auto gdData = gam.gdData.lock();
 
-    return this->post(makeCentralUrl("v2/totplogin"), 10, [&](CurlRequest& req) {
+    return this->post(makeCentralUrl(argon ? "v3/argonlogin" : "v2/totplogin"), 10, [&](CurlRequest& req) {
         matjson::Value accdata = matjson::Value::object();
         accdata["account_id"] = gdData->accountId;
         accdata["user_id"] = gdData->userId;
@@ -55,12 +57,21 @@ RequestTask WebRequestManager::requestAuthToken() {
         matjson::Value obj = matjson::Value::object();
         obj["account_data"] = accdata;
 
-        // recode as urlsafe
-        obj["authkey"] = authkey;
+        if (!argon) {
+            obj["authkey"] = authkey;
+        } else {
+            obj["token"] = argonToken;
+            if (auto s = NetworkManager::get().getSecure(fmt::to_string(gdData->accountId))) {
+                obj[GEODE_STR(GEODE_CONCAT(GEODE_CONCAT(tr, ust), GEODE_CONCAT(_tok, en)))] = s.value();
+            }
+        }
 
         req.bodyJSON(obj);
         req.encrypted(true);
-        req.param("protocol", NetworkManager::get().getUsedProtocol());
+
+        if (!argon) {
+            req.param("protocol", NetworkManager::get().getUsedProtocol());
+        }
     });
 }
 
@@ -127,6 +138,14 @@ RequestTask WebRequestManager::fetchServers(std::string_view urlOverride) {
     });
 }
 
+RequestTask WebRequestManager::fetchServerMeta(std::string_view urlOverride) {
+    auto url = urlOverride.empty() ? makeCentralUrl("v3/meta") : makeUrl(urlOverride, "v3/meta");
+
+    return this->get(url, 10, [&](CurlRequest& req) {
+        req.param("protocol", NetworkManager::get().getUsedProtocol());
+    });
+}
+
 RequestTask WebRequestManager::fetchFeaturedLevel() {
     return this->get(makeCentralUrl("flevel/current"));
 }
@@ -164,6 +183,32 @@ RequestTask WebRequestManager::testCloudflare() {
 
 RequestTask WebRequestManager::testCloudflareDomainTrace(std::string_view domain) {
     return this->get(fmt::format("https://{}/cdn-cgi/trace", domain));
+}
+
+bool WebRequestManager::isRussian() {
+    return m_russian.value_or(false);
+}
+
+void WebRequestManager::fetchCountry() {
+    if (m_russian.has_value()) {
+        return;
+    }
+
+    this->testCloudflareDomainTrace("boomlings.com").listen([this](CurlResponse* response) {
+        if (!response) return;
+
+        if (!response->ok()) {
+            log::warn("Failed to fetch cdn-cgi trace (code {}): {}", response->getCode(), response->text().unwrapOrDefault());
+            m_russian = true;
+            return;
+        }
+
+        auto text = response->text().unwrapOrDefault();
+        auto locpos = text.find("loc=") + 4;
+        std::string_view loc = std::string_view{text}.substr(locpos, 2);
+
+        m_russian = (loc == "RU" || loc == "BY"); // i dont think belarus blocks but im adding here to be safe
+    });
 }
 
 RequestTask WebRequestManager::get(std::string_view url) {

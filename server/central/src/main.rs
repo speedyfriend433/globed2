@@ -1,4 +1,4 @@
-#![feature(duration_constructors, async_closure)]
+#![feature(duration_constructors, duration_constructors_lite, let_chains)]
 #![allow(
     clippy::must_use_candidate,
     clippy::module_name_repetitions,
@@ -16,19 +16,21 @@ use std::{
     time::Duration,
 };
 
+use argon_client::ArgonClient;
 use async_watcher::{AsyncDebouncer, notify::RecursiveMode};
 use config::ServerConfig;
 use db::GlobedDb;
 use game_pinger::GameServerPinger;
 use globed_shared::{
     LogLevelFilter, get_log_level,
-    logger::{Logger, error, info, log, warn},
+    logger::{Logger, debug, error, info, log, warn},
 };
 use rocket::catchers;
 use rocket_db_pools::Database;
 use state::{ServerState, ServerStateData};
 use tokio::io::AsyncWriteExt;
 
+pub mod argon_client;
 pub mod config;
 pub mod db;
 pub mod game_pinger;
@@ -125,6 +127,34 @@ async fn main() -> Result<(), Box<dyn Error>> {
         abort_misconfig();
     }
 
+    // validate argon url
+    if config.use_argon && config.argon_url.is_empty() {
+        error!("invalid argon server URL set in central-conf.json");
+        warn!("hint: this should be the base URL of your argon central server instance");
+        warn!("hint: if you don't know what this means, read the instructions at https://github.com/GlobedGD/argon-server");
+        warn!("hint: you can also disable argon and use the built-in auth server, which is fine for most purposes");
+        abort_misconfig();
+    }
+
+    let argon_client = if config.use_argon {
+        let client = ArgonClient::new(config.argon_url.clone(), config.argon_token.clone());
+        match client.check_status().await {
+            Ok(s) => {
+                debug!("Argon server up, active: {}, ident: {}", s.active, s.ident);
+                Some(client)
+            }
+            Err(err) => {
+                error!("failed to reach the argon server at URL set in central-conf.json: {err}");
+                warn!("hint: the URL should be the base URL of your argon central server instance");
+                warn!("hint: if you don't know what this means, read the instructions at https://github.com/GlobedGD/argon-server");
+                warn!("hint: you can also disable argon and use the built-in auth server, which is fine for most purposes");
+                abort_misconfig();
+            }
+        }
+    } else {
+        None
+    };
+
     // stupid rust
 
     let mnt_point = config.web_mountpoint.clone();
@@ -133,7 +163,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let state_skey2 = config.secret_key2.clone();
 
     let pinger = GameServerPinger::new(&config.game_servers).await;
-    let ssd = ServerStateData::new(config_path.clone(), config, &state_skey, &state_skey2);
+    let ssd = ServerStateData::new(config_path.clone(), config, &state_skey, &state_skey2, argon_client);
     let state = ServerState::new(ssd, pinger);
 
     // config file watcher
@@ -153,6 +183,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     // set the maintenance flag appropriately
                     watcher_state.set_maintenance(state.config.maintenance);
                     watcher_state.inner.verifier.set_enabled(state.config.use_gd_api);
+
+                    // we can just recreate the client because it stores no internal state
+                    state.argon_client = state
+                        .config
+                        .use_argon
+                        .then(|| ArgonClient::new(state.config.argon_url.clone(), state.config.argon_token.clone()));
                 }
                 Err(err) => {
                     warn!("Failed to reload configuration: {}", err.to_string());

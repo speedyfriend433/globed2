@@ -21,6 +21,12 @@ pub struct LevelPlayerMetadataPacket {
     pub players: Vec<AssociatedPlayerMetadata>,
 }
 
+#[derive(Packet, Encodable, StaticSize)]
+#[packet(id = 22003, tcp = true)]
+pub struct LevelInnerPlayerCountPacket {
+    pub count: u32,
+}
+
 #[derive(Packet, Encodable, DynamicSize)]
 #[packet(id = 22010, encrypted = true, tcp = false)]
 pub struct VoiceBroadcastPacket {
@@ -33,4 +39,10 @@ pub struct VoiceBroadcastPacket {
 pub struct ChatMessageBroadcastPacket {
     pub player_id: i32,
     pub message: InlineString<MAX_MESSAGE_SIZE>,
+}
+
+#[derive(Packet, Encodable, StaticSize)]
+#[packet(id = 22012, tcp = true)]
+pub struct VoiceFailedPacket {
+    pub user_muted: bool,
 }

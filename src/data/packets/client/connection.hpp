@@ -93,16 +93,16 @@ class ClaimThreadPacket : public Packet {
     uint32_t secretKey;
 };
 
+GLOBED_SERIALIZABLE_STRUCT(ClaimThreadPacket, (secretKey));
+
 // 10006 - DisconnectPacket
 class DisconnectPacket : public Packet {
-    GLOBED_PACKET(10006, DisconnectPacket, false, false)
+    GLOBED_PACKET(10006, DisconnectPacket, false, true)
 
     DisconnectPacket() {}
 };
 
 GLOBED_SERIALIZABLE_STRUCT(DisconnectPacket, ());
-
-GLOBED_SERIALIZABLE_STRUCT(ClaimThreadPacket, (secretKey));
 
 // 10007 - KeepaliveTCPPacket
 class KeepaliveTCPPacket : public Packet {
@@ -112,6 +112,15 @@ class KeepaliveTCPPacket : public Packet {
 };
 
 GLOBED_SERIALIZABLE_STRUCT(KeepaliveTCPPacket, ());
+
+// 10008 - SkipClaimThreadPacket
+class SkipClaimThreadPacket : public Packet {
+    GLOBED_PACKET(10008, SkipClaimThreadPacket, false, false)
+
+    SkipClaimThreadPacket() {}
+};
+
+GLOBED_SERIALIZABLE_STRUCT(SkipClaimThreadPacket, ());
 
 // 10200 - ConnectionTestPacket
 class ConnectionTestPacket : public Packet {

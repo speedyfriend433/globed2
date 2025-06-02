@@ -1,9 +1,40 @@
+## v1.8.4
+
+* Fix rare crash when leaving a level
+* Fix `globed-no-ssl-verification` launch option not applying to Argon
+* Fix some SSL verification errors on Windows
+* Rebuild against Geode v4.5.0 to fix crashes during game exit
+
+## v1.8.3
+
+* fix mod not loading
+
+## v1.8.2
+
+* Add a new setting that forces the use of TCP for all packets, which may fix some connection issues at the cost of potential higher latency
+* Fix connection popup showing blank text sometimes
+* Fix unlisted levels being joinable through the player list in some situations
+* Fix friends not showing at the top of the player list anymore
+* Fix the popup saying microphone doesn't work showing up on Windows
+* Try to load mod's default textures if a broken texture pack is detected
+* Add new consent notice when first using the mod (will be shown to everyone after updating)
+* Add proper mod panel button in the globed menu
+* Hopefully fix some SSL issues
+
+## v1.8.1
+
+* Fix more issues related to texture packs
+* Fix authentication not working on Amazon store version of GD
+* Fix argon token not being regenerated upon auth failure
+
 ## v1.8.0
 
+* Add iOS support (may be unstable, please report issues!), for guide on installing Geode on iOS check [this page](https://github.com/geode-sdk/ios-launcher/blob/main/INSTALL.md)
 * Add ability to create <cg>setting profiles</c> and toggle between them
 * \-- This allows you to easily change many settings at once, for example if attending some event
 * \-- The amount of save slots is unlimited and you can give them custom names
 * Add a <cg>Connection Test</c> menu in settings, to make it easier to debug network issues
+* Added a <cg>Connection Relay</c> feature, and now the main servers have a relay hosted in Russia, to combat the common connection issues for people in Russia
 * Remove <cy>Custom Keybinds</c> dependency, add ability to change the keybinds <cg>in settings</c> (thanks [LimeGradient](user:7214334)!)
 * Add ability to <cj>reply</c> when you get a Globed notice from a moderator (not always enabled)
 * Gauntlet levels now show the <cg>player count</c> under them (thanks [LimeGradient](user:7214334)!)
@@ -12,15 +43,24 @@
 * Make it so that the original room owner becomes the owner again if they leave and rejoin the room
 * Added a keybind that lets you toggle <cj>visibility</c> of other players while in a level
 * Show the <cg>server rules</c> to the user when first connecting (thanks [TechStudent10](user:20284359))
-* Hopefully fix bugs with <cr>deaths not being detected</c> in 2-player mode or Death Link
+* Fix bugs with <cr>deaths not being detected</c> in 2-player mode or Death Link
 * Significant performance <cg>improvements</c>
-* Improve error messages for authentication issues, especially for people that are at the limit of sent messages
-* Add GDPS detection, warn user if trying to connect to the main server on a GDPS (thanks [km7dev](user:7236822) for Server API mod!)
+* Automatically suggest the user to run a <cg>Connection Test</c> if it's detected that players are not appearing in levels
+* Improve UX during server connection
+* Use new authentication API (Argon), improve error messages for authentication issues, especially for people that are at the limit of sent messages
+* Add GDPS detection, warn user if trying to connect to the main server on a GDPS (thanks [km7dev](user:7236822) for the mod Server API!)
+* Highlight and show an icon near the room host
+* Only load maximum 250 people in the global room to prevent freezes
+* Show a more descriptive popup when getting muted / banned
+* If trying to talk while muted, the icon above the player will reflect the mute state
+* Improve textures of some buttons
 * Fix error 10038 when trying to connect to a server
 * Fix crashing when connecting to a server that is down
 * Fix very rare crash when closing the Globed layer
+* Fix rare "invalid unordered_map key" crash when in a level
 * Fix certain rare crashes and hangs when closing the game
 * Fix some minor incompatibilities with More Icons
+* Some other small fixes and qol additions
 
 For developers: Added an event based API to allow mod developers to implement better compatibility with Globed.
 
